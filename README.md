@@ -418,16 +418,3 @@ Next steps:
 
 ---
 
-## 9. Repository Structure
-
-```
-.
-├── README.md
-└── images/
-    ├── topology.png
-    ├── topology/
-    ├── connectivity/
-    ├── pfsense/
-    ├── suricata-ubuntu/
-    └── suricata-pfsense/
-```
