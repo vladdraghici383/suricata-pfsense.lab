@@ -12,9 +12,10 @@ A virtualized cybersecurity lab built in VirtualBox to practice **intrusion dete
 4. [Stage 2: pfSense and the LAN Firewall Rule](#4-stage-2-pfsense-and-the-lan-firewall-rule)
 5. [Stage 3: Port Forwarding WAN → Metasploitable 2](#5-stage-3-port-forwarding-wan--metasploitable-2)
 6. [Stage 4: Suricata on pfSense](#6-stage-4-suricata-on-pfsense)
-7. [Skills Demonstrated](#7-skills-demonstrated)
-8. [Conclusions and Next Steps](#8-conclusions-and-next-steps)
-9. [Repository Structure](#9-repository-structure)
+7. [Stage 5: From IDS to IPS (Automatic Blocking)](#7-stage-5-from-ids-to-ips-automatic-blocking)
+8. [Skills Demonstrated](#8-skills-demonstrated)
+9. [Conclusions and Next Steps](#9-conclusions-and-next-steps)
+10. [Repository Structure](#10-repository-structure)
 
 ---
 
@@ -106,6 +107,7 @@ The LAN machines are attached only to the internal network `intnet`, so they hav
 3. **LAN firewall rule** in pfSense blocking outbound Internet access.
 4. **Port forwarding** from the WAN to Metasploitable 2, tested over SSH.
 5. **Suricata installed on pfSense**, with custom rules on the LAN interface (alerts from 5 November 2026).
+6. **Blocking mode enabled** on pfSense Suricata, turning the IDS into an IPS for traffic coming from the WAN (8 November 2026).
 
 ---
 
@@ -363,7 +365,7 @@ Rules are written under *Services → Suricata → Interfaces → LAN Rules*, ca
 
 ```
 alert icmp any any -> $HOME_NET any (msg:"PING DETECTED";sid:1000001;rev:1;)
-alert tcp any any -> $HOME_NET any (msg:"SSH DETECTED";sid:1000002;rev:1;)
+alert tcp any any -> $HOME_NET 22 (msg:"SSH DETECTED"; flags:S; sid:1000002; rev:1;)
 ```
 
 ![Custom rules on the LAN interface](images/suricata-pfsense/custom_rules_lan.png)
@@ -371,9 +373,9 @@ alert tcp any any -> $HOME_NET any (msg:"SSH DETECTED";sid:1000002;rev:1;)
 | SID | Detects |
 |---|---|
 | 1000001 | Any ICMP packet (`PING DETECTED`) |
-| 1000002 | TCP traffic to the network (`SSH DETECTED`) |
+| 1000002 | Start of an SSH connection: SYN packet to port 22 (`SSH DETECTED`) |
 
-> The `SSH DETECTED` rule matches any TCP port, so it fires on every TCP connection to `$HOME_NET`. For SSH-only detection, the destination can be narrowed to port 22: `$HOME_NET 22`.
+> The first version of the `SSH DETECTED` rule matched any TCP traffic to `$HOME_NET` (as in the screenshot). It was later narrowed to port 22 with `flags:S`, so it fires once per connection attempt and always reports the client as the source. This matters once blocking is enabled (see Stage 5).
 
 ### 6.4 Alerts
 
@@ -387,7 +389,75 @@ Notes:
 
 ---
 
-## 7. Skills Demonstrated
+## 7. Stage 5: From IDS to IPS (Automatic Blocking)
+
+Goal: let Suricata on pfSense not only alert on a suspicious connection, but also block the source automatically. The test is an SSH connection from Ubuntu (WAN, 10.0.3.7) through the port forward, because that traffic passes through pfSense.
+
+### 7.1 Why blocking needs traffic that passes through pfSense
+
+Suricata blocks by adding the offending IP to a pfSense firewall table. The firewall can only stop traffic that actually goes through it. A ping from Kali to Metasploitable 2 is still detected (both hosts are on the same LAN and the adapter is in promiscuous mode), but it is switched directly between the two machines, so it cannot be blocked by pfSense.
+
+### 7.2 Configuration
+
+**1. Precise rule.** The SSH rule was narrowed to SYN packets on port 22:
+
+```
+alert tcp any any -> $HOME_NET 22 (msg:"SSH DETECTED"; flags:S; sid:1000002; rev:1;)
+```
+
+The broader version also matched the server's replies, which with blocking enabled could have blocked Metasploitable 2 itself instead of the client.
+
+![Final SSH rule](images/suricata-pfsense/ssh_rule_final.png)
+
+**2. Alias for the LAN.** *Firewall → Aliases → IP*: alias `LAB_LAN`, type Network, `192.168.1.0/24`.
+
+**3. Custom Pass List.** Addresses on a Pass List are never blocked. A dedicated list `lab_passlist` was created under *Services → Suricata → Pass Lists*: the auto-generated **Local Networks** entry is unchecked and the trusted LAN is added explicitly through the `LAB_LAN` alias, while WAN gateways and DNS servers stay protected. This makes the trusted hosts (Kali, both Metasploitable machines and pfSense) explicit, so an alert can never lock the administrator out, while WAN clients such as 10.0.3.7 can be blocked.
+
+**4. Blocking settings.** *Services → Suricata → Interfaces → LAN Settings*:
+
+| Setting | Value | Why |
+|---|---|---|
+| Block Offenders | Enabled | Turns alerts into blocks |
+| IPS Mode | Legacy Mode | Analyzes a copy of the traffic and blocks the IP after an alert; works on virtual NICs |
+| Kill States | Enabled | Also drops connections already open |
+| Which IP to Block | SRC | Blocks only the client, never the target |
+| Block On DROP Only | Disabled | `alert` rules can trigger blocks |
+| Pass List | `lab_passlist` | Protects the LAN, allows blocking WAN clients |
+
+The interface is restarted after saving.
+
+![Block Offenders and Legacy Mode](images/suricata-pfsense/blocking_settings_1.png)
+
+![Kill States, Which IP to Block and Pass List](images/suricata-pfsense/blocking_settings_2.png)
+![Custom Pass List](images/suricata-pfsense/pass_list.png)
+
+### 7.3 Test and result
+
+From Ubuntu (WAN):
+
+```bash
+ssh meta2      # first attempt: generates the SSH DETECTED alert
+ssh meta2      # second attempt: Connection timed out
+```
+
+The first connection attempt triggers `SSH DETECTED` with source 10.0.3.7 and destination 192.168.1.100:22. Suricata adds 10.0.3.7 to the block table and every following attempt from Ubuntu ends in `Connection timed out`. The test was repeated after the rule cleanup (17:21:45 and 17:42:25), and both blocks were triggered by sid 1000002. The blocked address appears under *Services → Suricata → Blocks* and is removed with **Clear** after the test.
+
+![SSH DETECTED alert from the WAN client](images/suricata-pfsense/ssh_alert_wan.png)
+![10.0.3.7 in the Blocks tab](images/suricata-pfsense/blocked_host.png)
+![Connection timed out after the block](images/suricata-pfsense/ssh_timeout_blocked.png)
+
+### 7.4 Legacy Mode vs Inline Mode
+
+| | Legacy Mode (used here) | Inline Mode |
+|---|---|---|
+| How it works | Inspects a copy of the traffic, then blocks the IP | Sits in the traffic path and drops packets |
+| What blocks | Any alerting rule | Only rules written with `drop` |
+| First packet | Passes, the block follows | Stopped |
+| Requirements | Any network card | `netmap` support, can be unstable on virtual NICs |
+
+---
+
+## 8. Skills Demonstrated
 
 - Designing a segmented virtual network (WAN / LAN) in VirtualBox
 - Installing, configuring and validating Suricata IDS on Linux
@@ -395,20 +465,23 @@ Notes:
 - Reading and interpreting IDS alerts (`fast.log`, pfSense Alerts view)
 - Configuring pfSense firewall rules and understanding rule ordering
 - Configuring NAT port forwarding and testing it from an external network
-- Running Suricata as a pfSense package in IDS mode
+- Running Suricata as a pfSense package in IDS and IPS (Legacy blocking) mode
+- Designing Pass Lists to avoid blocking trusted hosts
 - Troubleshooting with `tcpdump`, packet capture, ARP and routing checks
 
 ---
 
-## 8. Conclusions and Next Steps
+## 9. Conclusions and Next Steps
 
 The lab now includes:
 - a Suricata 8.0.3 IDS on Ubuntu with six custom rules, loaded without errors alongside ~53,000 public rules;
 - a pfSense firewall separating the LAN from the WAN and blocking outbound Internet access;
 - a working port forward that lets the WAN client reach Metasploitable 2 over SSH;
-- Suricata running on pfSense with custom rules and alerts for LAN traffic.
+- Suricata running on pfSense with custom rules and alerts for LAN traffic;
+- automatic blocking of WAN clients that trigger an alert (IDS → IPS).
 
 Next steps:
+- place Kali in a separate subnet behind pfSense, so attacks against the targets pass through the firewall and can be blocked;
 - detect port scans (`nmap -sS`) and SSH/FTP brute-force attempts using `threshold`;
 - run attacks from Kali against Metasploitable (Metasploit exploits) and analyse the alerts;
 - monitor the pfSense WAN interface for connections arriving through port forwarding;
@@ -417,4 +490,5 @@ Next steps:
 > This lab must only be used in an isolated environment. Metasploitable is intentionally vulnerable and must never be exposed to real networks.
 
 ---
+
 
