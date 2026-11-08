@@ -407,8 +407,6 @@ alert tcp any any -> $HOME_NET 22 (msg:"SSH DETECTED"; flags:S; sid:1000002; rev
 
 The broader version also matched the server's replies, which with blocking enabled could have blocked Metasploitable 2 itself instead of the client.
 
-![Final SSH rule](images/suricata-pfsense/ssh_rule_final.png)
-
 **2. Alias for the LAN.** *Firewall → Aliases → IP*: alias `LAB_LAN`, type Network, `192.168.1.0/24`.
 
 **3. Custom Pass List.** Addresses on a Pass List are never blocked. A dedicated list `lab_passlist` was created under *Services → Suricata → Pass Lists*: the auto-generated **Local Networks** entry is unchecked and the trusted LAN is added explicitly through the `LAB_LAN` alias, while WAN gateways and DNS servers stay protected. This makes the trusted hosts (Kali, both Metasploitable machines and pfSense) explicit, so an alert can never lock the administrator out, while WAN clients such as 10.0.3.7 can be blocked.
