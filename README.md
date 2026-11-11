@@ -565,10 +565,25 @@ The **LAN FULL SCAN** task scanned the whole 192.168.1.0/24 network with pfSense
 Observations:
 - The scan discovered every powered-on host and identified its operating system correctly.
 - The hardened Suricata VM (a regularly updated Ubuntu) shows only a low-severity finding, a sharp contrast with the critical results of Metasploitable 2.
-- Metasploitable 3 was reached and identified as Windows, but no vulnerabilities were reported. For an unauthenticated scan this usually means its services were not reachable from Kali, for example filtered by the Windows firewall. A dedicated or authenticated scan of this host is a next step.
+- Metasploitable 3 was reached and identified as Windows, but this LAN scan reported no vulnerabilities for it. The Nessus scans below show that the host exposes many services and has the most critical findings in the lab, so the empty result comes from this OpenVAS run rather than from the host being safe.
 - Kali (the scanner itself) was included because it was not excluded from the target.
 
-### 8.5 Nessus Essentials on Metasploitable 2
+### 8.5 Network discovery with Nessus
+
+A Nessus **Host Discovery** scan of 192.168.1.0/24 maps the live hosts and their open ports in a few minutes, without vulnerability checks:
+
+| Host | Name / OS | Open ports |
+|---|---|---|
+| 192.168.1.1 | pfSense.rdcostel.ca | 53 (DNS), 80 (web interface) |
+| 192.168.1.101 | Windows 6.1 (Metasploitable 3, Windows Server 2008 R2) | 22, 135, 137, 138, 139, 161, 445 and more |
+| 192.168.1.102 | Kali (the scanner) | 8834 (Nessus web interface) |
+| 192.168.1.103 | Suricata Ubuntu | 22 (SSH), 80 (Apache) |
+
+![Nessus network discovery](images/nessus/lan_discovery_hosts.png)
+
+This is the classic first step of an assessment: find what exists and what it exposes, then decide what to scan in depth.
+
+### 8.6 Nessus Essentials on Metasploitable 2
 
 To compare scanners, Metasploitable 2 was also scanned with **Tenable Nessus Essentials** (free edition, up to 16 IPs) from the same Kali VM, using the *Basic Network Scan* policy. OpenVAS was stopped during the Nessus scan, so the two tools did not compete for resources.
 
@@ -594,7 +609,69 @@ Top findings reported by Nessus include the **UnrealIRCd backdoor**, a **VNC ser
 
 ![Nessus vulnerabilities sorted by severity](images/nessus/meta2_vulnerabilities.png)
 
-### 8.6 OpenVAS vs Nessus on Metasploitable 2
+### 8.7 Nessus network vulnerability scan
+
+A second Nessus scan, **Home Network Lab Vuln Scan** (*Basic Network Scan* policy), assessed pfSense, Metasploitable 2 and Metasploitable 3 together. Only the three exact IP addresses were targeted, to stay within the 16-IP limit of Nessus Essentials. The scan found **93 vulnerabilities** across the three hosts in **18 minutes** and suggested **8 remediations**.
+
+| Host | Role | Critical | High | Medium | Info |
+|---|---|---|---|---|---|
+| 192.168.1.101 | Metasploitable 3 (Windows) | 21 | 27 | 35 | 116 |
+| 192.168.1.100 | Metasploitable 2 (Linux) | 9 | 7 | 26 | 133 |
+| 192.168.1.1 | pfSense firewall | 0 | 0 | 3 | 22 |
+
+A few low-severity findings were also reported for each host.
+
+![Nessus network scan hosts](images/nessus/lan_scan_hosts.png)
+
+**Highest-ranked findings across the network:**
+
+| Vulnerability | CVSS | VPR | EPSS |
+|---|---|---|---|
+| UnrealIRCd Backdoor Detection | 10.0 | 7.9 | 0.8353 |
+| Canonical Ubuntu Linux SEoL (unsupported release) | 10.0 | | |
+| VNC Server 'password' Password | 10.0 | | |
+| SSL Version 2 and 3 Protocol Detection | 9.8 | | |
+| Bind Shell Backdoor Detection | 9.8 | | |
+
+*VPR* (Vulnerability Priority Rating) is Tenable's score of how likely a vulnerability is to be exploited in practice; *EPSS* is the estimated probability of exploitation in the wild. An EPSS of **0.8353** means the UnrealIRCd backdoor has roughly an **84% probability** of being exploited, which makes it the first item to fix.
+
+![Nessus network scan vulnerabilities](images/nessus/lan_scan_vulnerabilities.png)
+
+**Metasploitable 3 in detail.** The Windows target has the largest attack surface in the lab: **48 vulnerability groups**, mostly in its web stack (Apache Tomcat, PHP, Apache HTTP Server), plus Windows and SSL issues.
+
+![Metasploitable 3 vulnerabilities](images/nessus/meta3_vulnerabilities.png)
+
+Example: **Apache Tomcat SEoL (8.0.x)**, rated **Critical (CVSS v3.0 10.0)**, with vector `AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H`: reachable over the network, with low complexity, no privileges and no user interaction required, and a high impact on confidentiality, integrity and availability. The version is no longer maintained, so it will not receive security patches. **Remediation:** upgrade to a supported Apache Tomcat release.
+
+![Apache Tomcat end-of-life finding](images/nessus/meta3_vuln_detail.png)
+
+What this scan adds:
+- **Metasploitable 3 is the most vulnerable host** (21 critical, 27 high), which confirms that the empty OpenVAS LAN result for this host came from that scan run, not from the host being secure.
+- **pfSense shows only medium and informational findings**, as expected for a maintained firewall.
+- Metasploitable 2 results are consistent with its dedicated scan (9 vs 10 critical); small differences between runs are normal for network scanners.
+
+### 8.8 Detection: the scan seen by Suricata
+
+Vulnerability scanners first probe many ports to find open services, which is exactly what an attacker does during reconnaissance (MITRE ATT&CK **T1046, Network Service Discovery**). A custom rule on the pfSense LAN interface detects this behaviour by counting connection attempts per source:
+
+```
+alert tcp any any -> $HOME_NET any (msg:"Possible port scan (many SYN)"; flags:S; threshold: type threshold, track by_src, count 50, seconds 10; sid:1000005; rev:1;)
+```
+
+| Part | Meaning |
+|---|---|
+| `flags:S` | Only SYN packets, i.e. new connection attempts |
+| `track by_src` | Counts attempts separately for each source IP |
+| `count 50, seconds 10` | Alerts when one source opens more than 50 connections within 10 seconds |
+| `alert` | Detection only: with *Block On DROP Only*, the scanner is logged but not blocked |
+
+During the Nessus network scan, the rule fired repeatedly for traffic from Kali (192.168.1.102) to Metasploitable 2 (192.168.1.100), on many different, random destination ports within the same second: the typical signature of a port scan.
+
+![Suricata alerts during the scan](images/openvas/suricata_scan_alerts.png)
+
+The same activity is now visible from both sides: the scanner's report on the attacker side and the IDS alerts on the defender side.
+
+### 8.9 OpenVAS vs Nessus on Metasploitable 2
 
 | | OpenVAS (Greenbone) | Nessus Essentials |
 |---|---|---|
@@ -612,11 +689,12 @@ What the comparison shows:
 - **OpenVAS adds a Quality of Detection (QoD) score** that shows how certain each finding is; **Nessus was faster** on this host (16 minutes) and presents remediation-oriented views.
 - In practice, running two scanners gives better coverage: findings reported by both are the most reliable starting point for remediation.
 
-### 8.7 Takeaways
+### 8.10 Takeaways
 
-- A single intentionally vulnerable host produced **more than 20 critical and high findings in each scanner**, including remotely reachable backdoor and code execution services.
+- A single intentionally vulnerable host produced **more than 20 critical and high findings in each scanner**, and Metasploitable 3 alone reached **48 critical and high findings** in Nessus.
+- Exploitation likelihood (VPR / EPSS) refines prioritization: the UnrealIRCd backdoor, with an EPSS of 0.8353, is the first item to fix.
 - Prioritizing by severity and confidence shows where to start: confirmed critical findings first, then outdated software with a known vendor fix.
-- Combined with the earlier stages, the lab now covers both sides: **Suricata detects attacks**, while **OpenVAS and Nessus find the weaknesses** an attacker would target.
+- Combined with the earlier stages, the lab now covers both sides: **Suricata detects attacks**, including the scans themselves, while **OpenVAS and Nessus find the weaknesses** an attacker would target.
 
 ---
 
@@ -648,7 +726,7 @@ The lab now includes:
 
 Next steps:
 - place Kali in a separate subnet behind pfSense, so attacks against the targets pass through the firewall and can be blocked;
-- run an authenticated scan of Metasploitable 3 to look past the Windows firewall;
+- re-run OpenVAS against Metasploitable 3 alone and compare with the Nessus results;
 - detect port scans (`nmap -sS`) and SSH/FTP brute-force attempts using `threshold`;
 - run attacks from Kali against Metasploitable (Metasploit exploits) and analyse the alerts;
 - monitor the pfSense WAN interface for connections arriving through port forwarding;
