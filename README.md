@@ -13,9 +13,10 @@ A virtualized cybersecurity lab built in VirtualBox to practice **intrusion dete
 5. [Stage 3: Port Forwarding WAN → Metasploitable 2](#5-stage-3-port-forwarding-wan--metasploitable-2)
 6. [Stage 4: Suricata on pfSense](#6-stage-4-suricata-on-pfsense)
 7. [Stage 5: From IDS to IPS (Automatic Blocking)](#7-stage-5-from-ids-to-ips-automatic-blocking)
-8. [Skills Demonstrated](#8-skills-demonstrated)
-9. [Conclusions and Next Steps](#9-conclusions-and-next-steps)
-10. [Repository Structure](#10-repository-structure)
+8. [Stage 6: Vulnerability Scanning with OpenVAS and Nessus](#8-stage-6-vulnerability-scanning-with-openvas-and-nessus)
+9. [Skills Demonstrated](#9-skills-demonstrated)
+10. [Conclusions and Next Steps](#10-conclusions-and-next-steps)
+11. [Repository Structure](#11-repository-structure)
 
 ---
 
@@ -108,6 +109,7 @@ The LAN machines are attached only to the internal network `intnet`, so they hav
 4. **Port forwarding** from the WAN to Metasploitable 2, tested over SSH.
 5. **Suricata installed on pfSense**, with custom rules on the LAN interface (alerts from 5 November 2026).
 6. **Blocking mode enabled** on pfSense Suricata, turning the IDS into an IPS for traffic coming from the WAN (8 November 2026).
+7. **Vulnerability scanning** of the lab with OpenVAS (10 November 2026) and Nessus Essentials (11 November 2026).
 
 ---
 
@@ -429,6 +431,7 @@ The interface is restarted after saving.
 ![Block Offenders and Legacy Mode](images/suricata-pfsense/blocking_settings_1.png)
 
 ![Kill States, Which IP to Block and Pass List](images/suricata-pfsense/blocking_settings_2.png)
+
 ![Custom Pass List](images/suricata-pfsense/pass_list.png)
 
 ### 7.3 Test and result
@@ -443,6 +446,7 @@ ssh meta2      # second attempt: Connection timed out
 The first connection attempt triggers `SSH DETECTED` with source 10.0.3.7 and destination 192.168.1.100:22. Suricata adds 10.0.3.7 to the block table and every following attempt from Ubuntu ends in `Connection timed out`. The test was repeated after the rule cleanup (17:21:45 and 17:42:25), and both blocks were triggered by sid 1000002. The blocked address appears under *Services → Suricata → Blocks* and is removed with **Clear** after the test.
 
 ![SSH DETECTED alert from the WAN client](images/suricata-pfsense/ssh_alert_wan.png)
+
 ![10.0.3.7 in the Blocks tab](images/suricata-pfsense/blocked_host.png)
 ![Connection timed out after the block](images/suricata-pfsense/ssh_timeout_blocked.png)
 
@@ -457,7 +461,166 @@ The first connection attempt triggers `SSH DETECTED` with source 10.0.3.7 and de
 
 ---
 
-## 8. Skills Demonstrated
+## 8. Stage 6: Vulnerability Scanning with OpenVAS and Nessus
+
+Goal: move from detecting attacks to finding weaknesses before they are exploited. OpenVAS, part of **Greenbone Vulnerability Management (GVM)**, runs on Kali and scans the lab hosts for known vulnerabilities, reporting each finding with its severity, CVE references and recommended fix.
+
+| Component | Detail |
+|---|---|
+| Scanner host | Kali Linux (192.168.1.102) |
+| Platform | GVM 25 (OpenVAS scanner 23.51) |
+| Web interface | Greenbone Security Assistant, `https://127.0.0.1:9392` |
+| Vulnerability tests (NVTs) | 193,162 |
+| Scan configuration | Full and fast |
+
+All four feeds (NVT, SCAP, CERT and GVMD data) were **Current** before scanning:
+
+![Feed status](images/openvas/feed_status.png)
+
+### 8.1 Targets
+
+| Target | Hosts | Scope |
+|---|---|---|
+| Target for immediate scan of IP 192.168.1.100 | 192.168.1.100 | Metasploitable 2 |
+| Network 192.168.1.0/24 | 192.168.1.0/24 (254 addresses) | Every live host in the LAN |
+
+Both targets use the *All IANA assigned TCP* port list.
+
+![Targets](images/openvas/targets.png)
+
+### 8.2 Scan of Metasploitable 2
+
+The scan of 192.168.1.100 completed with an overall severity of **10.0 (Critical)**, the highest possible score.
+
+![Task completed](images/openvas/tasks_done.png)
+
+| Severity | Findings |
+|---|---|
+| Critical | 13 |
+| High | 9 |
+| Medium | 40 |
+| Low | 6 |
+| Log (informational) | 90 |
+| False positives | 0 |
+
+![Report summary](images/openvas/meta2_report_summary.png)
+
+**Examples of critical findings (CVSS 10.0):**
+
+| Vulnerability | Port | QoD | What it means |
+|---|---|---|---|
+| Possible Backdoor: Ingreslock | 1524/tcp | 99% | A backdoor shell listening on the port, giving remote command access |
+| Distributed Ruby (dRuby/DRb) Multiple RCE Vulnerabilities | 8787/tcp | 99% | The dRuby service allows remote code execution |
+| TWiki < 4.2.4 Multiple XSS / Command Execution Vulnerabilities | 80/tcp | 80% | Outdated web application vulnerable to XSS and command execution |
+| Operating System (OS) End of Life (EOL) Detection | general/tcp | 80% | The operating system no longer receives security updates |
+
+*QoD (Quality of Detection)* shows how reliable a finding is: 99% means the vulnerability was confirmed directly, lower values mean it was inferred, for example from a version number.
+
+![Critical findings](images/openvas/meta2_results_critical.png)
+
+### 8.3 Finding analysis: TWiki command execution
+
+| Field | Value |
+|---|---|
+| Vulnerability | TWiki < 4.2.4 Multiple XSS / Command Execution Vulnerabilities |
+| Severity | 10.0 (Critical) |
+| Location | 192.168.1.100, port 80/tcp |
+| Installed version | 01.Feb.2003 |
+| Fixed version | 4.2.4 |
+
+- **Cause:** the `%URLPARAM{}%` variable is not sanitized, which enables cross-site scripting, and the `%SEARCH{}%` variable is passed to an `eval()` call, which lets an attacker execute Perl code.
+- **Impact:** execution of arbitrary scripts or commands, theft of cookie-based credentials and compromise of the application.
+- **Remediation:** vendor fix, update TWiki to version 4.2.4 or later.
+
+![Vulnerability detail](images/openvas/meta2_vuln_detail_1.png)
+
+![Detection result and insight](images/openvas/meta2_vuln_detail_2.png)
+
+![Impact and solution](images/openvas/meta2_vuln_detail_3.png)
+
+### 8.4 LAN Full Scan
+
+The **LAN FULL SCAN** task scanned the whole 192.168.1.0/24 network with pfSense, Kali, Metasploitable 3 and the Suricata Ubuntu VM powered on. It completed with an overall severity of **4.8 (Medium)**.
+
+![LAN Full Scan completed](images/openvas/lan_task_done.png)
+
+| Host | Detected OS | Severity |
+|---|---|---|
+| 192.168.1.101 (Metasploitable 3) | Microsoft Windows | 0.0 (Log), no findings |
+| 192.168.1.102 (Kali) | Linux Kernel | 0.0 (Log), no findings |
+| 192.168.1.103 (Suricata) | Canonical Ubuntu Linux | 2.6 (Low) |
+
+**Metasploitable 3 (192.168.1.101)**
+
+![Metasploitable 3 in the LAN scan](images/openvas/lan_host_meta3.png)
+
+**Kali (192.168.1.102)**
+
+![Kali in the LAN scan](images/openvas/lan_host_kali.png)
+
+**Suricata Ubuntu (192.168.1.103)**
+
+![Suricata Ubuntu in the LAN scan](images/openvas/lan_host_suricata.png)
+
+Observations:
+- The scan discovered every powered-on host and identified its operating system correctly.
+- The hardened Suricata VM (a regularly updated Ubuntu) shows only a low-severity finding, a sharp contrast with the critical results of Metasploitable 2.
+- Metasploitable 3 was reached and identified as Windows, but no vulnerabilities were reported. For an unauthenticated scan this usually means its services were not reachable from Kali, for example filtered by the Windows firewall. A dedicated or authenticated scan of this host is a next step.
+- Kali (the scanner itself) was included because it was not excluded from the target.
+
+### 8.5 Nessus Essentials on Metasploitable 2
+
+To compare scanners, Metasploitable 2 was also scanned with **Tenable Nessus Essentials** (free edition, up to 16 IPs) from the same Kali VM, using the *Basic Network Scan* policy. OpenVAS was stopped during the Nessus scan, so the two tools did not compete for resources.
+
+| Detail | Value |
+|---|---|
+| Policy | Basic Network Scan |
+| Target | 192.168.1.100 |
+| Severity base | CVSS v3.0 |
+| Duration | 16 minutes |
+| Authentication | None (unauthenticated scan) |
+
+| Severity | Findings |
+|---|---|
+| Critical | 10 |
+| High | 7 |
+| Medium | 26 |
+| Low | 8 |
+| Info | 134 |
+
+![Nessus host summary](images/nessus/meta2_summary.png)
+
+Top findings reported by Nessus include the **UnrealIRCd backdoor**, a **VNC server protected by the password `password`**, a **bind shell backdoor**, the **Apache Tomcat AJP connector** vulnerability, **SSL version 2 and 3** support, an **unsupported Ubuntu release** and **world-readable NFS shares**.
+
+![Nessus vulnerabilities sorted by severity](images/nessus/meta2_vulnerabilities.png)
+
+### 8.6 OpenVAS vs Nessus on Metasploitable 2
+
+| | OpenVAS (Greenbone) | Nessus Essentials |
+|---|---|---|
+| Critical | 13 | 10 |
+| High | 9 | 7 |
+| Medium | 40 | 26 |
+| Low | 6 | 8 |
+| Informational | 90 (Log) | 134 (Info) |
+| Licence | Open source, free | Free edition, limited to 16 IPs |
+| Severity scale | CVSS, with a QoD score per finding | CVSS v3.0 (plus VPR / EPSS in commercial editions) |
+
+What the comparison shows:
+- **Both scanners rate the host as critical** and agree on the most serious problems: remotely reachable backdoors and an operating system that no longer receives updates.
+- **The raw numbers are not directly comparable.** Each tool uses its own test library, and Nessus groups related issues into a single entry (for example *SSL (Multiple Issues)*), while OpenVAS lists each test result separately.
+- **OpenVAS adds a Quality of Detection (QoD) score** that shows how certain each finding is; **Nessus was faster** on this host (16 minutes) and presents remediation-oriented views.
+- In practice, running two scanners gives better coverage: findings reported by both are the most reliable starting point for remediation.
+
+### 8.7 Takeaways
+
+- A single intentionally vulnerable host produced **more than 20 critical and high findings in each scanner**, including remotely reachable backdoor and code execution services.
+- Prioritizing by severity and confidence shows where to start: confirmed critical findings first, then outdated software with a known vendor fix.
+- Combined with the earlier stages, the lab now covers both sides: **Suricata detects attacks**, while **OpenVAS and Nessus find the weaknesses** an attacker would target.
+
+---
+
+## 9. Skills Demonstrated
 
 - Designing a segmented virtual network (WAN / LAN) in VirtualBox
 - Installing, configuring and validating Suricata IDS on Linux
@@ -467,21 +630,25 @@ The first connection attempt triggers `SSH DETECTED` with source 10.0.3.7 and de
 - Configuring NAT port forwarding and testing it from an external network
 - Running Suricata as a pfSense package in IDS and IPS (Legacy blocking) mode
 - Designing Pass Lists to avoid blocking trusted hosts
+- Vulnerability scanning with OpenVAS / Greenbone and Nessus Essentials, and interpreting CVSS findings
+- Comparing scanner results and prioritizing remediation
 - Troubleshooting with `tcpdump`, packet capture, ARP and routing checks
 
 ---
 
-## 9. Conclusions and Next Steps
+## 10. Conclusions and Next Steps
 
 The lab now includes:
 - a Suricata 8.0.3 IDS on Ubuntu with six custom rules, loaded without errors alongside ~53,000 public rules;
 - a pfSense firewall separating the LAN from the WAN and blocking outbound Internet access;
 - a working port forward that lets the WAN client reach Metasploitable 2 over SSH;
 - Suricata running on pfSense with custom rules and alerts for LAN traffic;
-- automatic blocking of WAN clients that trigger an alert (IDS → IPS).
+- automatic blocking of WAN clients that trigger an alert (IDS → IPS);
+- vulnerability scanning of the lab hosts with OpenVAS and Nessus Essentials, including a side-by-side comparison.
 
 Next steps:
 - place Kali in a separate subnet behind pfSense, so attacks against the targets pass through the firewall and can be blocked;
+- run an authenticated scan of Metasploitable 3 to look past the Windows firewall;
 - detect port scans (`nmap -sS`) and SSH/FTP brute-force attempts using `threshold`;
 - run attacks from Kali against Metasploitable (Metasploit exploits) and analyse the alerts;
 - monitor the pfSense WAN interface for connections arriving through port forwarding;
@@ -491,4 +658,18 @@ Next steps:
 
 ---
 
+## 11. Repository Structure
 
+```
+.
+├── README.md
+└── images/
+    ├── topology.png
+    ├── topology/
+    ├── connectivity/
+    ├── pfsense/
+    ├── suricata-ubuntu/
+    ├── suricata-pfsense/
+    ├── openvas/
+    └── nessus/
+```
