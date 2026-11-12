@@ -1,6 +1,6 @@
 # Home Security Lab: Suricata IDS, pfSense Firewall and Vulnerable Targets
 
-A virtualized cybersecurity lab built in VirtualBox to practice **intrusion detection (IDS)** with Suricata, **traffic filtering** with pfSense and **port forwarding** from an external network into a protected LAN. Metasploitable 2 and 3 are used as vulnerable targets and Kali Linux as the attacker machine.
+A virtualized cybersecurity lab built in VirtualBox to practice **intrusion detection (IDS/IPS)** with Suricata, **traffic filtering** with pfSense, **port forwarding** from an external network into a protected LAN, **vulnerability scanning** with OpenVAS and Nessus, and **centralized monitoring** with the Wazuh SIEM. Metasploitable 2 and 3 are used as vulnerable targets and Kali Linux as the attacker machine.
 
 ![Lab topology](images/topology.png)
 
@@ -14,9 +14,10 @@ A virtualized cybersecurity lab built in VirtualBox to practice **intrusion dete
 6. [Stage 4: Suricata on pfSense](#6-stage-4-suricata-on-pfsense)
 7. [Stage 5: From IDS to IPS (Automatic Blocking)](#7-stage-5-from-ids-to-ips-automatic-blocking)
 8. [Stage 6: Vulnerability Scanning with OpenVAS and Nessus](#8-stage-6-vulnerability-scanning-with-openvas-and-nessus)
-9. [Skills Demonstrated](#9-skills-demonstrated)
-10. [Conclusions and Next Steps](#10-conclusions-and-next-steps)
-11. [Repository Structure](#11-repository-structure)
+9. [Stage 7: SIEM with Wazuh](#9-stage-7-siem-with-wazuh)
+10. [Skills Demonstrated](#10-skills-demonstrated)
+11. [Conclusions and Next Steps](#11-conclusions-and-next-steps)
+12. [Repository Structure](#12-repository-structure)
 
 ---
 
@@ -29,6 +30,7 @@ A virtualized cybersecurity lab built in VirtualBox to practice **intrusion dete
 | Metasploitable 3 | Vulnerable target (Windows Server 2008) | 192.168.1.101/24 |
 | Ubuntu 26.04.1 LTS | Suricata IDS (dedicated VM) | 192.168.1.103/24 (DHCP) |
 | pfSense 2.9.0 | Firewall / router, with the Suricata package | WAN: 10.0.3.10/24, LAN: 192.168.1.1/24 |
+| Ubuntu 26.04.1 LTS | Wazuh SIEM server (all-in-one) | 192.168.1.106/24 |
 | Ubuntu 22.04 (WAN) | External test client | 10.0.3.7/24 (DHCP) |
 
 ### IP address verification
@@ -67,6 +69,7 @@ A virtualized cybersecurity lab built in VirtualBox to practice **intrusion dete
 | Metasploitable 2 | Adapter 1 | Internal Network | `intnet` |
 | Metasploitable 3 | Adapter 1 | Internal Network | `intnet` |
 | Ubuntu (Suricata) | Adapter 1 | Internal Network | `intnet` |
+| Ubuntu (Wazuh) | Adapter 1 | Internal Network | `intnet` |
 | Ubuntu (WAN) | Adapter 1 | NAT Network | `LabNetwork` |
 
 The LAN machines are attached only to the internal network `intnet`, so they have no direct access to the real network. The only way out is the pfSense WAN interface, through the `LabNetwork` NAT Network. The adapters use *Promiscuous Mode: Allow All*, which lets the IDS sensors see traffic exchanged between the other machines.
@@ -110,6 +113,7 @@ The LAN machines are attached only to the internal network `intnet`, so they hav
 5. **Suricata installed on pfSense**, with custom rules on the LAN interface (alerts from 5 November 2026).
 6. **Blocking mode enabled** on pfSense Suricata, turning the IDS into an IPS for traffic coming from the WAN (8 November 2026).
 7. **Vulnerability scanning** of the lab with OpenVAS (10 November 2026) and Nessus Essentials (11 November 2026).
+8. **Wazuh SIEM** with agents on Kali and the Suricata VM, vulnerability detection and VirusTotal integration (12 November 2026).
 
 ---
 
@@ -420,7 +424,7 @@ The broader version also matched the server's replies, which with blocking enabl
 | Setting | Value | Why |
 |---|---|---|
 | Block Offenders | Enabled | Turns alerts into blocks |
-| IPS Mode | Legacy Mode | Analyzes a copy of the traffic and blocks the IP after an alert; works on virtual NICs |
+| IPS Mode | Legacy Mode | Blocks the source IP address after an alert |
 | Kill States | Enabled | Also drops connections already open |
 | Which IP to Block | SRC | Blocks only the client, never the target |
 | Block On DROP Only | Disabled | `alert` rules can trigger blocks |
@@ -450,10 +454,7 @@ The first connection attempt triggers `SSH DETECTED` with source 10.0.3.7 and de
 ![10.0.3.7 in the Blocks tab](images/suricata-pfsense/blocked_host.png)
 ![Connection timed out after the block](images/suricata-pfsense/ssh_timeout_blocked.png)
 
-### 7.4 Legacy Mode vs Inline Mode
-
-| | Legacy Mode (used here) | Inline Mode |
-|---|---|---|
+---|---|---|
 | How it works | Inspects a copy of the traffic, then blocks the IP | Sits in the traffic path and drops packets |
 | What blocks | Any alerting rule | Only rules written with `drop` |
 | First packet | Passes, the block follows | Stopped |
@@ -514,7 +515,7 @@ The scan of 192.168.1.100 completed with an overall severity of **10.0 (Critical
 | TWiki < 4.2.4 Multiple XSS / Command Execution Vulnerabilities | 80/tcp | 80% | Outdated web application vulnerable to XSS and command execution |
 | Operating System (OS) End of Life (EOL) Detection | general/tcp | 80% | The operating system no longer receives security updates |
 
-*QoD (Quality of Detection)* shows how reliable a finding is: 99% means the vulnerability was confirmed directly, lower values mean it was inferred, for example from a version number.
+*QoD* shows how sure the scanner is about each finding.
 
 ![Critical findings](images/openvas/meta2_results_critical.png)
 
@@ -625,15 +626,15 @@ A few low-severity findings were also reported for each host.
 
 **Highest-ranked findings across the network:**
 
-| Vulnerability | CVSS | VPR | EPSS |
-|---|---|---|---|
-| UnrealIRCd Backdoor Detection | 10.0 | 7.9 | 0.8353 |
-| Canonical Ubuntu Linux SEoL (unsupported release) | 10.0 | | |
-| VNC Server 'password' Password | 10.0 | | |
-| SSL Version 2 and 3 Protocol Detection | 9.8 | | |
-| Bind Shell Backdoor Detection | 9.8 | | |
+| Vulnerability | CVSS |
+|---|---|
+| UnrealIRCd Backdoor Detection | 10.0 |
+| Canonical Ubuntu Linux SEoL (unsupported release) | 10.0 |
+| VNC Server 'password' Password | 10.0 |
+| SSL Version 2 and 3 Protocol Detection | 9.8 |
+| Bind Shell Backdoor Detection | 9.8 |
 
-*VPR* (Vulnerability Priority Rating) is Tenable's score of how likely a vulnerability is to be exploited in practice; *EPSS* is the estimated probability of exploitation in the wild. An EPSS of **0.8353** means the UnrealIRCd backdoor has roughly an **84% probability** of being exploited, which makes it the first item to fix.
+Besides the severity score, Nessus also shows how likely a vulnerability is to be exploited in practice. For the UnrealIRCd backdoor this likelihood is high, which makes it the first item to fix.
 
 ![Nessus network scan vulnerabilities](images/nessus/lan_scan_vulnerabilities.png)
 
@@ -641,7 +642,7 @@ A few low-severity findings were also reported for each host.
 
 ![Metasploitable 3 vulnerabilities](images/nessus/meta3_vulnerabilities.png)
 
-Example: **Apache Tomcat SEoL (8.0.x)**, rated **Critical (CVSS v3.0 10.0)**, with vector `AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H`: reachable over the network, with low complexity, no privileges and no user interaction required, and a high impact on confidentiality, integrity and availability. The version is no longer maintained, so it will not receive security patches. **Remediation:** upgrade to a supported Apache Tomcat release.
+Example: **Apache Tomcat SEoL (8.0.x)**, rated **Critical (CVSS 10.0)**. The version is no longer maintained, so it will not receive security patches. **Remediation:** upgrade to a supported Apache Tomcat release.
 
 ![Apache Tomcat end-of-life finding](images/nessus/meta3_vuln_detail.png)
 
@@ -681,24 +682,131 @@ The same activity is now visible from both sides: the scanner's report on the at
 | Low | 6 | 8 |
 | Informational | 90 (Log) | 134 (Info) |
 | Licence | Open source, free | Free edition, limited to 16 IPs |
-| Severity scale | CVSS, with a QoD score per finding | CVSS v3.0 (plus VPR / EPSS in commercial editions) |
+| Severity scale | CVSS, with a QoD score per finding | CVSS v3.0 |
 
 What the comparison shows:
 - **Both scanners rate the host as critical** and agree on the most serious problems: remotely reachable backdoors and an operating system that no longer receives updates.
 - **The raw numbers are not directly comparable.** Each tool uses its own test library, and Nessus groups related issues into a single entry (for example *SSL (Multiple Issues)*), while OpenVAS lists each test result separately.
-- **OpenVAS adds a Quality of Detection (QoD) score** that shows how certain each finding is; **Nessus was faster** on this host (16 minutes) and presents remediation-oriented views.
+- **OpenVAS shows how sure it is about each finding (QoD)**; **Nessus was faster** on this host (16 minutes).
 - In practice, running two scanners gives better coverage: findings reported by both are the most reliable starting point for remediation.
 
 ### 8.10 Takeaways
 
 - A single intentionally vulnerable host produced **more than 20 critical and high findings in each scanner**, and Metasploitable 3 alone reached **48 critical and high findings** in Nessus.
-- Exploitation likelihood (VPR / EPSS) refines prioritization: the UnrealIRCd backdoor, with an EPSS of 0.8353, is the first item to fix.
+- Severity is not the only factor: how likely a vulnerability is to be exploited also matters when deciding what to fix first.
 - Prioritizing by severity and confidence shows where to start: confirmed critical findings first, then outdated software with a known vendor fix.
 - Combined with the earlier stages, the lab now covers both sides: **Suricata detects attacks**, including the scans themselves, while **OpenVAS and Nessus find the weaknesses** an attacker would target.
 
 ---
 
-## 9. Skills Demonstrated
+## 9. Stage 7: SIEM with Wazuh
+
+Goal: collect security events from the lab hosts in one place, as a SOC would. **Wazuh** is an open-source SIEM platform: lightweight **agents** on the endpoints send logs, file changes and software inventories to a central **server**, which analyzes them with detection rules and shows the results in a web dashboard.
+
+The Wazuh server (192.168.1.106) joins the LAN next to the other hosts, and agents run on Kali and on the Suricata VM:
+
+![Lab topology with the Wazuh server](images/topology.png)
+
+### 9.1 Architecture
+
+| Component | Detail |
+|---|---|
+| Server | Dedicated Ubuntu 26.04.1 LTS VM, 192.168.1.106, LAN (`intnet`) |
+| Deployment | All-in-one (indexer, server and dashboard on one host) |
+| Version | Wazuh 4.14 |
+| Dashboard | `https://192.168.1.106`, opened from Kali |
+| Agents | `suricata-ubuntu` (192.168.1.103) and `kali` (192.168.1.102) |
+
+All three server services (`wazuh-indexer`, `wazuh-manager` and `wazuh-dashboard`) run on the server. Because the first start of the manager processes the vulnerability database and takes several minutes on this VM, its systemd start timeout was raised with an override (`TimeoutStartSec`).
+
+![Wazuh services running](images/wazuh/services_running.png)
+
+### 9.2 Agents
+
+Agents were deployed from **Endpoints → Deploy new agent** (Linux, DEB amd64), pointing to the server address 192.168.1.106. Both report as **active**, running agent version 4.14:
+
+| ID | Name | IP | Operating system |
+|---|---|---|---|
+| 001 | suricata-ubuntu | 192.168.1.103 | Ubuntu 26.04.1 LTS |
+| 002 | kali | 192.168.1.102 | Kali GNU/Linux 2026.3 |
+
+![Active agents](images/wazuh/agents_active.png)
+
+The overview dashboard summarizes the alerts of the last 24 hours by severity level and links to the main modules: Configuration Assessment, Malware Detection, Threat Hunting and Vulnerability Detection.
+
+![Wazuh overview](images/wazuh/dashboard_overview.png)
+
+### 9.3 Vulnerability detection
+
+Unlike OpenVAS and Nessus, Wazuh does not scan over the network. Each agent sends the list of installed packages, and the server matches it against CVE feeds. This works like an authenticated scan: it sees all installed software, not only the services exposed on the network. The module is enabled on the server, with the vulnerability feed refreshed every 60 minutes:
+
+```xml
+<vulnerability-detection>
+  <enabled>yes</enabled>
+  <index-status>yes</index-status>
+  <feed-update-interval>60m</feed-update-interval>
+</vulnerability-detection>
+```
+
+![Vulnerability detection configuration](images/wazuh/vuln_detection_config.png)
+
+**Example finding on `suricata-ubuntu`:** **CVE-2026-97413**, a Linux kernel integer underflow in the RDMA `rtrs-srv` component, where a value read from a network-supplied message field is used without validation. The details link to the Ubuntu security tracker and the CVE record, which give the fixed package version.
+
+![Vulnerability detail](images/wazuh/vuln_detail_suricata.png)
+
+### 9.4 VirusTotal integration
+
+Wazuh can check new or modified files against **VirusTotal**. The flow is:
+
+1. **File Integrity Monitoring (FIM)** on the agent watches a folder in real time;
+2. when a file is added, the agent reports it to the server;
+3. the server sends the file **hash** (not the file itself) to the VirusTotal API;
+4. if engines flag the file, Wazuh raises an alert.
+
+**Server**, in `/var/ossec/etc/ossec.conf` (inside `<ossec_config>`):
+
+```xml
+<integration>
+  <name>virustotal</name>
+  <api_key>YOUR_API_KEY</api_key>
+  <group>syscheck</group>
+  <alert_format>json</alert_format>
+</integration>
+```
+
+**Kali agent**, in the `<syscheck>` section of its own `ossec.conf`:
+
+```xml
+<directories realtime="yes">/home/kali/Downloads</directories>
+```
+
+The configuration was validated as well-formed XML before restarting the services. The VirusTotal API key is personal and is not stored in this repository.
+
+**Test:** the harmless **EICAR** antivirus test file was downloaded to `/home/kali/Downloads/eicar.com.txt`. Within seconds Wazuh raised rule **87105** (level 12):
+
+> VirusTotal: Alert - /home/kali/Downloads/eicar.com.txt - 66 engines detected this file
+
+![VirusTotal alert](images/wazuh/virustotal_alert.png)
+
+| Field | Value |
+|---|---|
+| Agent | kali (002), 192.168.1.102 |
+| File | /home/kali/Downloads/eicar.com.txt |
+| Detections | 66 of 68 engines |
+| MD5 | 44d88612fea8a8f36de82e1278abb02f |
+| SHA1 | 3395856ce81f2b7382dee72602f798b642f14140 |
+
+![VirusTotal alert details](images/wazuh/virustotal_alert_detail.png)
+
+### 9.5 Takeaways
+
+- The SIEM adds the **host view** to the network view of Suricata: what is installed, which files change and whether they are known malware.
+- Agent-based vulnerability detection finds issues that a network scanner cannot see, such as a vulnerable kernel with no exposed service.
+- The VirusTotal integration shows a complete detection chain: **file created → FIM event → threat intelligence lookup → alert**, which is the basis for automated response.
+
+---
+
+## 10. Skills Demonstrated
 
 - Designing a segmented virtual network (WAN / LAN) in VirtualBox
 - Installing, configuring and validating Suricata IDS on Linux
@@ -706,15 +814,17 @@ What the comparison shows:
 - Reading and interpreting IDS alerts (`fast.log`, pfSense Alerts view)
 - Configuring pfSense firewall rules and understanding rule ordering
 - Configuring NAT port forwarding and testing it from an external network
-- Running Suricata as a pfSense package in IDS and IPS (Legacy blocking) mode
+- Running Suricata as a pfSense package in IDS and IPS (blocking) mode
 - Designing Pass Lists to avoid blocking trusted hosts
 - Vulnerability scanning with OpenVAS / Greenbone and Nessus Essentials, and interpreting CVSS findings
 - Comparing scanner results and prioritizing remediation
+- Deploying a Wazuh SIEM server and agents, and investigating alerts in the dashboard
+- File Integrity Monitoring and threat intelligence enrichment with VirusTotal
 - Troubleshooting with `tcpdump`, packet capture, ARP and routing checks
 
 ---
 
-## 10. Conclusions and Next Steps
+## 11. Conclusions and Next Steps
 
 The lab now includes:
 - a Suricata 8.0.3 IDS on Ubuntu with six custom rules, loaded without errors alongside ~53,000 public rules;
@@ -722,11 +832,14 @@ The lab now includes:
 - a working port forward that lets the WAN client reach Metasploitable 2 over SSH;
 - Suricata running on pfSense with custom rules and alerts for LAN traffic;
 - automatic blocking of WAN clients that trigger an alert (IDS → IPS);
-- vulnerability scanning of the lab hosts with OpenVAS and Nessus Essentials, including a side-by-side comparison.
+- vulnerability scanning of the lab hosts with OpenVAS and Nessus Essentials, including a side-by-side comparison;
+- a Wazuh SIEM with agents on two hosts, agent-based vulnerability detection and VirusTotal file reputation checks.
 
 Next steps:
 - place Kali in a separate subnet behind pfSense, so attacks against the targets pass through the firewall and can be blocked;
 - re-run OpenVAS against Metasploitable 3 alone and compare with the Nessus results;
+- forward Suricata alerts (`eve.json`) and pfSense logs into Wazuh to correlate network and host events;
+- add a Wazuh agent to Metasploitable 3 and enable Active Response to remove files flagged by VirusTotal;
 - detect port scans (`nmap -sS`) and SSH/FTP brute-force attempts using `threshold`;
 - run attacks from Kali against Metasploitable (Metasploit exploits) and analyse the alerts;
 - monitor the pfSense WAN interface for connections arriving through port forwarding;
@@ -736,7 +849,7 @@ Next steps:
 
 ---
 
-## 11. Repository Structure
+## 12. Repository Structure
 
 ```
 .
@@ -749,5 +862,6 @@ Next steps:
     ├── suricata-ubuntu/
     ├── suricata-pfsense/
     ├── openvas/
-    └── nessus/
+    ├── nessus/
+    └── wazuh/
 ```
