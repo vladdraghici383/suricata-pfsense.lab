@@ -15,9 +15,10 @@ A virtualized cybersecurity lab built in VirtualBox to practice **intrusion dete
 7. [Stage 5: From IDS to IPS (Automatic Blocking)](#7-stage-5-from-ids-to-ips-automatic-blocking)
 8. [Stage 6: Vulnerability Scanning with OpenVAS and Nessus](#8-stage-6-vulnerability-scanning-with-openvas-and-nessus)
 9. [Stage 7: SIEM with Wazuh](#9-stage-7-siem-with-wazuh)
-10. [Skills Demonstrated](#10-skills-demonstrated)
-11. [Conclusions and Next Steps](#11-conclusions-and-next-steps)
-12. [Repository Structure](#12-repository-structure)
+10. [Stage 8: Patch Management with Action1](#10-stage-8-patch-management-with-action1)
+11. [Skills Demonstrated](#11-skills-demonstrated)
+12. [Conclusions and Next Steps](#12-conclusions-and-next-steps)
+13. [Repository Structure](#13-repository-structure)
 
 ---
 
@@ -114,6 +115,7 @@ The LAN machines are attached only to the internal network `intnet`, so they hav
 6. **Blocking mode enabled** on pfSense Suricata, turning the IDS into an IPS for traffic coming from the WAN (8 November 2026).
 7. **Vulnerability scanning** of the lab with OpenVAS (10 November 2026) and Nessus Essentials (11 November 2026).
 8. **Wazuh SIEM** with agents on Kali and the Suricata VM, vulnerability detection and VirusTotal integration (12 November 2026).
+9. **Patch management** of the Suricata VM with Action1 (13 November 2026).
 
 ---
 
@@ -836,7 +838,66 @@ The same `/admin.php` request also produced a separate **Web server 400 error co
 
 ---
 
-## 10. Skills Demonstrated
+## 10. Stage 8: Patch Management with Action1
+
+Goal: close the vulnerability management loop. The earlier stages **found** weaknesses; this stage **fixes** them by applying updates, then checks the result.
+
+**Action1** is a cloud-based patch management platform: an agent on each machine reports installed software and missing updates to a web console, from which updates can be deployed remotely. The free edition covers up to 200 endpoints.
+
+### 10.1 Setup
+
+| Detail | Value |
+|---|---|
+| Managed endpoint | Suricata Ubuntu VM (`rdsnort`, 192.168.1.103) |
+| Agent | Action1 agent for Linux (`.deb` package), linked to the organization with an installation token |
+| Console | Action1 web console, opened from Kali |
+
+The Suricata VM was chosen because it is the lab's "production" server: it should be kept up to date. The Metasploitable targets were left unpatched on purpose, since they are the vulnerable targets for scanning.
+
+### 10.2 Before: missing updates
+
+Action1 reported pending **security updates** for the Apache web server packages (`apache2`, `apache2-bin`, `apache2-data`, `apache2-utils`): installed version `2.4.66-2ubuntu2.6`, available version `2.4.66-2ubuntu2.8`, severity **Important**.
+
+![Missing updates before patching](images/action1/missing_updates_before.png)
+
+At the same time, Wazuh vulnerability detection on the same host (filtered on agent `suricata-ubuntu`, ID 001) showed the following state:
+
+| Critical | High | Medium | Low | Pending evaluation |
+|---|---|---|---|---|
+| 121 | 931 | 556 | 116 | 1,455 |
+
+![Wazuh vulnerabilities before patching](images/action1/wazuh_vulns_before.png)
+
+### 10.3 Applying the updates
+
+Deploying updates from the Action1 console is a **protected action**: Action1's *Endpoint Takeover Prevention* requires each sensitive command to be signed with the administrator's personal key, unlocked by a passphrase. This prevents a stolen console account from pushing commands to the machines. In this lab the key passphrase was lost, and a new key can only be approved by a second administrator, so the console deployment was not possible.
+
+The updates were therefore applied directly on the host:
+
+```bash
+sudo apt update && sudo apt upgrade -y
+sudo reboot
+```
+
+The upgrade also installed a new Linux kernel (`7.0.0-43-generic`, replacing `7.0.0-42-generic`), and the VM was rebooted to load it. Suricata and the Wazuh agent started again automatically after the reboot.
+
+### 10.4 After: verification
+
+After the update, Action1 reports the endpoint as **Up-to-date**, with **no vulnerable software** and no reboot required:
+
+![Endpoint up to date in Action1](images/action1/endpoint_up_to_date.png)
+
+At the time of writing, the Wazuh vulnerability count for the host had not yet changed: the agent re-sends its package inventory and the server re-evaluates it periodically, so the update is reflected with a delay.
+
+### 10.5 Takeaways
+
+- **Find, fix, verify:** scanners and the SIEM find vulnerabilities, patching fixes them, and a second look confirms the result.
+- **"Up to date" does not mean "no vulnerabilities".** Action1 checks whether all *available* updates are installed. Wazuh also counts known vulnerabilities for which no fix has been released yet, so the two numbers measure different things.
+- **Security controls also apply to the defenders.** Signed actions protect the endpoints from a compromised console account, but they also mean that losing the key passphrase blocks remote deployment, even for the administrator.
+
+---
+
+## 11. Skills Demonstrated
 
 - Designing a segmented virtual network (WAN / LAN) in VirtualBox
 - Installing, configuring and validating Suricata IDS on Linux
@@ -850,11 +911,12 @@ The same `/admin.php` request also produced a separate **Web server 400 error co
 - Comparing scanner results and prioritizing remediation
 - Deploying a Wazuh SIEM server and agents, and investigating alerts in the dashboard
 - File Integrity Monitoring and threat intelligence enrichment with VirusTotal
+- Patch management with Action1 and verifying remediation
 - Troubleshooting with `tcpdump`, packet capture, ARP and routing checks
 
 ---
 
-## 11. Conclusions and Next Steps
+## 12. Conclusions and Next Steps
 
 The lab now includes:
 - a Suricata 8.0.3 IDS on Ubuntu with six custom rules, loaded without errors alongside ~53,000 public rules;
@@ -863,7 +925,8 @@ The lab now includes:
 - Suricata running on pfSense with custom rules and alerts for LAN traffic;
 - automatic blocking of WAN clients that trigger an alert (IDS → IPS);
 - vulnerability scanning of the lab hosts with OpenVAS and Nessus Essentials, including a side-by-side comparison;
-- a Wazuh SIEM with agents on two hosts, Suricata alerts forwarded from `eve.json`, agent-based vulnerability detection and VirusTotal file reputation checks.
+- a Wazuh SIEM with agents on two hosts, Suricata alerts forwarded from `eve.json`, agent-based vulnerability detection and VirusTotal file reputation checks;
+- patch management of the Suricata VM with Action1.
 
 Next steps:
 - place Kali in a separate subnet behind pfSense, so attacks against the targets pass through the firewall and can be blocked;
@@ -879,7 +942,7 @@ Next steps:
 
 ---
 
-## 12. Repository Structure
+## 13. Repository Structure
 
 ```
 .
@@ -893,5 +956,6 @@ Next steps:
     ├── suricata-pfsense/
     ├── openvas/
     ├── nessus/
-    └── wazuh/
+    ├── wazuh/
+    └── action1/
 ```
