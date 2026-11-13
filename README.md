@@ -432,6 +432,8 @@ The broader version also matched the server's replies, which with blocking enabl
 
 The interface is restarted after saving.
 
+In Legacy Mode Suricata does not sit in the traffic path: it inspects a copy of the traffic, so the first packets of a connection can pass before the alert fires and the source IP is added to the block table.
+
 ![Block Offenders and Legacy Mode](images/suricata-pfsense/blocking_settings_1.png)
 
 ![Kill States, Which IP to Block and Pass List](images/suricata-pfsense/blocking_settings_2.png)
@@ -798,9 +800,37 @@ The configuration was validated as well-formed XML before restarting the service
 
 ![VirusTotal alert details](images/wazuh/virustotal_alert_detail.png)
 
-### 9.5 Takeaways
+### 9.5 Suricata alerts in Wazuh
 
-- The SIEM adds the **host view** to the network view of Suricata: what is installed, which files change and whether they are known malware.
+The Suricata IDS on Ubuntu writes every alert in JSON format to `/var/log/suricata/eve.json`. To send these network alerts to the SIEM, the Wazuh agent on the Suricata VM reads this file. The block is added at the end of the agent's `/var/ossec/etc/ossec.conf`, inside `<ossec_config>`:
+
+```xml
+<localfile>
+  <log_format>json</log_format>
+  <location>/var/log/suricata/eve.json</location>
+</localfile>
+```
+
+![Agent configuration for eve.json](images/wazuh/ossec_conf_suricata.png)
+
+After restarting the agent, its log confirms `Analyzing file: '/var/log/suricata/eve.json'`. Wazuh's built-in Suricata rules (rule **86601**) turn each Suricata alert into a Wazuh alert:
+
+| Wazuh alert | Origin |
+|---|---|
+| Suricata: Alert - Attempt to get into admin page | Custom rule from `local.rules`, triggered by `curl http://192.168.1.103/admin.php` from Kali |
+| Suricata: Alert - ET INFO Possible Kali Linux hostname in DHCP Request Packet | Public ET Open rule: a host announced itself as "kali" when requesting an IP address |
+
+![Suricata alerts in Wazuh](images/wazuh/suricata_alerts_in_wazuh.png)
+
+The alert details keep all the Suricata fields, such as the signature, signature ID (10000010), application protocol (HTTP), destination IP and port (192.168.1.103:80) and the action (`allowed`, since the IDS only alerts):
+
+![Suricata alert details in Wazuh](images/wazuh/suricata_alert_detail.png)
+
+The same `/admin.php` request also produced a separate **Web server 400 error code** alert from the Apache access log, because the page does not exist. One action is therefore visible from two independent sources, the network (Suricata) and the web server log, which is the kind of correlation a SIEM is built for.
+
+### 9.6 Takeaways
+
+- The SIEM brings both views into one place: **network alerts** from Suricata and **host data** from the agents (installed software, file changes, known malware).
 - Agent-based vulnerability detection finds issues that a network scanner cannot see, such as a vulnerable kernel with no exposed service.
 - The VirusTotal integration shows a complete detection chain: **file created → FIM event → threat intelligence lookup → alert**, which is the basis for automated response.
 
@@ -833,12 +863,12 @@ The lab now includes:
 - Suricata running on pfSense with custom rules and alerts for LAN traffic;
 - automatic blocking of WAN clients that trigger an alert (IDS → IPS);
 - vulnerability scanning of the lab hosts with OpenVAS and Nessus Essentials, including a side-by-side comparison;
-- a Wazuh SIEM with agents on two hosts, agent-based vulnerability detection and VirusTotal file reputation checks.
+- a Wazuh SIEM with agents on two hosts, Suricata alerts forwarded from `eve.json`, agent-based vulnerability detection and VirusTotal file reputation checks.
 
 Next steps:
 - place Kali in a separate subnet behind pfSense, so attacks against the targets pass through the firewall and can be blocked;
 - re-run OpenVAS against Metasploitable 3 alone and compare with the Nessus results;
-- forward Suricata alerts (`eve.json`) and pfSense logs into Wazuh to correlate network and host events;
+- forward pfSense firewall logs into Wazuh;
 - add a Wazuh agent to Metasploitable 3 and enable Active Response to remove files flagged by VirusTotal;
 - detect port scans (`nmap -sS`) and SSH/FTP brute-force attempts using `threshold`;
 - run attacks from Kali against Metasploitable (Metasploit exploits) and analyse the alerts;
